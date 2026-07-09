@@ -2,11 +2,13 @@
 Streamlit application for the AI Voice Assistant.
 """
 
+import hashlib
 import logging
-
 from datetime import datetime
+
 import streamlit as st
 
+from config.settings import TEMP_AUDIO_DIR
 from services.assistant import AssistantService
 
 
@@ -28,7 +30,7 @@ st.set_page_config(
 st.title("🎙️ AI Voice Assistant")
 
 st.write(
-    "Speak through your microphone and let the AI respond."
+    "Record a voice message and let the AI respond."
 )
 
 st.divider()
@@ -43,48 +45,90 @@ if "assistant" not in st.session_state:
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-if "is_listening" not in st.session_state:
-    st.session_state.is_listening = False
+if "last_audio_hash" not in st.session_state:
+    st.session_state.last_audio_hash = None
 
 
 # -----------------------------
-# Buttons
+# Browser Microphone
 # -----------------------------
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    start = st.button("🎤 Start Conversation")
-
-with col2:
-    stop = st.button("⏹️ Stop Conversation")
-
-with col3:
-    if st.session_state.chat_history:
-        clear = st.button("🗑️ Clear Chat")
-    else:
-        clear = False
+audio_value = st.audio_input(
+    "🎤 Record your message"
+)
 
 
 # -----------------------------
-# Button Actions
+# Clear Conversation
 # -----------------------------
-if start:
-    st.session_state.is_listening = True
+if st.session_state.chat_history:
 
-if stop:
-    st.session_state.is_listening = False
-    st.session_state.assistant.stop()
-    
+    if st.button("🗑️ Clear Chat"):
+
+        st.session_state.chat_history.clear()
+
+        st.session_state.assistant.clear_conversation()
+
+        # IMPORTANT:
+        # Do NOT reset last_audio_hash to None here.
+        # Otherwise, the old recording is treated as new.
+
+        st.rerun()
+
+
 # -----------------------------
-# Start continuous Conversation
+# Process Recorded Audio
 # -----------------------------
-if st.session_state.is_listening:
-        
-    with st.spinner("🎤 Listening...please speak"):
-        user_text, assistant_text = (
-            st.session_state.assistant.chat()
+if audio_value is not None:
+
+    audio_bytes = audio_value.getvalue()
+
+    audio_hash = hashlib.sha256(
+        audio_bytes
+    ).hexdigest()
+
+    if audio_hash != st.session_state.last_audio_hash:
+
+        # Mark as processed before running the pipeline.
+        st.session_state.last_audio_hash = audio_hash
+
+        input_audio_path = (
+            TEMP_AUDIO_DIR / "browser_recording.wav"
         )
 
+        input_audio_path.write_bytes(audio_bytes)
+
+        try:
+
+            with st.spinner("🤖 Thinking..."):
+
+                user_text, assistant_text, response_audio = (
+                    st.session_state.assistant.chat_from_audio(
+                        input_audio_path
+                    )
+                )
+
+            response_audio_bytes = response_audio.read_bytes()
+
+        except ValueError as error:
+
+            st.warning(str(error))
+            st.stop()
+
+        except Exception as error:
+
+            logging.exception(
+                "Failed to process voice input: %s",
+                error,
+            )
+
+            st.error(
+                "Something went wrong while processing your voice. "
+                "Please try again."
+            )
+
+            st.stop()
+
+        # User message
         st.session_state.chat_history.append(
             {
                 "role": "user",
@@ -93,44 +137,46 @@ if st.session_state.is_listening:
             }
         )
 
+        # Assistant message
         st.session_state.chat_history.append(
             {
                 "role": "assistant",
                 "content": assistant_text,
                 "timestamp": datetime.now(),
+                "audio": response_audio_bytes,
             }
         )
 
-
-#-----------
-# stop
-#---------
-if stop:
-    st.session_state.is_listening = False
+        st.rerun()
 
 
 # -----------------------------
-# Clear Conversation
-# -----------------------------
-if clear:
-
-    st.session_state.chat_history.clear()
-
-    st.session_state.assistant.clear_conversation()
-
-    st.rerun()
-
-# -----------------------------
-# Results
+# Conversation History
 # -----------------------------
 if st.session_state.chat_history:
 
     st.divider()
-
     st.subheader("Conversation")
 
-    for message in st.session_state.chat_history:
+    for index, message in enumerate(
+        st.session_state.chat_history
+    ):
 
         with st.chat_message(message["role"]):
 
             st.write(message["content"])
+
+            if (
+                message["role"] == "assistant"
+                and "audio" in message
+            ):
+
+                st.audio(
+                    message["audio"],
+                    format="audio/mp3",
+                    autoplay=(
+                        index
+                        == len(st.session_state.chat_history) - 1
+                    ),
+                )
+

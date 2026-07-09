@@ -1,40 +1,34 @@
-# Orchestrator
-
 """
-Assistant orchestration service.
+Core assistant orchestration service.
 
-Coordinates all AI services together.
+Coordinates Speech-to-Text, conversation memory,
+LLM response generation, and Text-to-Speech.
 """
 
-from pathlib import Path
 import logging
+from pathlib import Path
 
-from audio.recorder import RecorderService
-from audio.player import PlayerService
 from stt.speech_to_text import SpeechToTextService
 from llm.llm_client import LLMService
 from tts.text_to_speech import TextToSpeechService
 from services.memory import ConversationMemory
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-
-
 class AssistantService:
     """
-    Main AI Voice Assistant.
-    Responsible for orchestrating the complete pipeline.
+    Core AI Voice Assistant service.
+
+    This class is platform-independent. It does not record audio
+    from a local microphone and does not play audio through local
+    speakers.
+
+    It accepts an existing audio file, processes it through the AI
+    pipeline, and returns the generated results.
     """
 
     def __init__(self) -> None:
-
         logging.info("Initializing AI Voice Assistant...")
 
-        self.recorder = RecorderService()
-        self.player = PlayerService()
         self.stt = SpeechToTextService()
         self.llm = LLMService()
         self.tts = TextToSpeechService()
@@ -42,48 +36,60 @@ class AssistantService:
 
         logging.info("Assistant initialized successfully.")
 
-    def chat(self) -> tuple[str, str]:
+    def chat_from_audio(
+        self,
+        audio_path: Path,
+    ) -> tuple[str, str, Path]:
         """
-        Execute one complete conversation.
+        Process an existing audio file through the complete
+        AI Voice Assistant pipeline.
+
+        Args:
+            audio_path:
+                Path to the user's recorded audio file.
 
         Returns:
-            tuple[str, str]:
-                (User transcription, AI response)
+            tuple[str, str, Path]:
+                User transcription,
+                assistant response,
+                generated response audio path.
         """
 
         try:
-            # -------------------------
-            # Record Audio
-            # -------------------------
-            audio_path: Path = self.recorder.record()
-
             # -------------------------
             # Speech → Text
             # -------------------------
             user_text = self.stt.transcribe(audio_path)
 
-            logging.info(f"User: {user_text}")
+            logging.info("User: %s", user_text)
+
+            if not user_text.strip():
+                raise ValueError(
+                    "No speech could be detected in the audio."
+                )
 
             # -------------------------
-            # Store Conversation
+            # Add User Message to Memory
             # -------------------------
             self.memory.add_user_message(user_text)
 
             # -------------------------
-            # LLM Response
+            # Generate LLM Response
             # -------------------------
             assistant_response = self.llm.generate_response(
                 self.memory.get_messages()
             )
 
             logging.info(
-                f"Assistant: {assistant_response}"
+                "Assistant: %s",
+                assistant_response,
             )
 
-            #-------------------------
-            # Store Conversation
-            #-------------------------            
-            self.memory.add_assistant_message(assistant_response
+            # -------------------------
+            # Add Assistant Response to Memory
+            # -------------------------
+            self.memory.add_assistant_message(
+                assistant_response
             )
 
             # -------------------------
@@ -93,53 +99,24 @@ class AssistantService:
                 assistant_response
             )
 
-            # -------------------------
-            # Play Audio
-            # -------------------------
-            self.player.play(response_audio)
-
             return (
                 user_text,
                 assistant_response,
+                response_audio,
             )
 
         except Exception as error:
-
             logging.exception(
-                f"Assistant pipeline failed: {error}"
+                "Assistant pipeline failed: %s",
+                error,
             )
-
-            return (
-                "ERROR",
-                "Sorry, something went wrong while processing your request.",
-            )
+            raise
 
     def clear_conversation(self) -> None:
         """
-        Clear the conversation memory.
+        Reset the assistant's conversation memory.
         """
+
         self.memory.reset()
 
         logging.info("Conversation memory cleared.")
-
-    def stop(self) -> None:
-        """
-        Stop the assistant playback.
-        """
-        self.player.stop()
-
-if __name__ == "__main__":
-
-    assistant = AssistantService()
-
-    user_text, response = assistant.chat()
-
-    print("\n==============================")
-    print("USER")
-    print("------------------------------")
-    print(user_text)
-
-    print("\nASSISTANT")
-    print("------------------------------")
-    print(response)
-    print("==============================")
